@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Kiro Soccer</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #0a0a0f;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      font-family: 'Courier New', monospace;
+      overflow: hidden;
+    }
+    canvas {
+      border: 2px solid #790ECB;
+      box-shadow: 0 0 30px #790ECB55, 0 0 60px #790ECB22;
+      display: block;
+    }
+    #ui {
+      color: #fff;
+      margin-top: 10px;
+      font-size: 13px;
+      opacity: 0.6;
+      letter-spacing: 1px;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="gameCanvas" width="800" height="450"></canvas>
+  <div id="ui">WASD / Arrow Keys to move &nbsp;|&nbsp; SPACE to jump &nbsp;|&nbsp; Walk into ball to kick</div>
+  <script src="game.js"></script>
+</body>
+</html>
