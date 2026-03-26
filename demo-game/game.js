@@ -22,7 +22,7 @@ const GOAL      = { x: W - 100, y: GROUND_Y - 120, w: 12, h: 120 };
 const NET_DEPTH = 60; // how far the net extends behind the post
 
 // Kick limit
-const MAX_KICKS = 3;
+const MAX_KICKS = 4;
 
 // Fan crowd
 const FAN_COUNT     = 30;
@@ -447,7 +447,7 @@ function update() {
     ball.y = py + ny * (minDist + 1);
 
     if (player.kickCooldown === 0) {
-      player.kickCooldown = 20;
+      player.kickCooldown = 35; // long enough to prevent multi-frame contact counting as multiple kicks
       kickCount++;
       kickTrail = {
         x1: px,
