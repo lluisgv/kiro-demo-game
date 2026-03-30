@@ -22,13 +22,13 @@ const GOAL      = { x: W - 100, y: GROUND_Y - 120, w: 12, h: 120 };
 const NET_DEPTH = 60; // how far the net extends behind the post
 
 // Kick limit
-const MAX_KICKS = 4;
+const MAX_KICKS = 5;
 
 // Fan crowd
 const FAN_COUNT     = 30;
 const FAN_COLORS    = ['#3a2a4a', '#2a1a3a', '#4a2a5a', '#1a1a2a'];
-const FAN_AMPLITUDE = 3;
-const FAN_SPEED     = 0.04;
+const FAN_AMPLITUDE = 6;
+const FAN_SPEED     = 0.10;
 
 // Kick trail
 const KICK_TRAIL_FRAMES = 8;
@@ -99,6 +99,7 @@ const player = {
   onGround: false,
   facing: 1,
   kickCooldown: 0,
+  jumpCount: 0, // 0 = on ground, 1 = single jump, 2 = double jump used
 };
 
 // ─── Ball ────────────────────────────────────────────────────────────────────
@@ -231,7 +232,15 @@ document.addEventListener('keydown', e => {
     e.preventDefault();
     if (gameState === 'start')         startGame();
     else if (gameState === 'gameOver') startGame();
-    else if (gameState === 'playing' && player.onGround) jump();
+    else if (gameState === 'playing') {
+      if (player.onGround) {
+        player.jumpCount = 1;
+        jump(false);
+      } else if (player.jumpCount === 1) {
+        player.jumpCount = 2;
+        jump(true); // double jump — 1.8x height
+      }
+    }
   }
 });
 document.addEventListener('keyup',  e => { keys[e.code] = false; });
@@ -254,6 +263,19 @@ function ballHitsRect(rx, ry, rw, rh) {
 const sprite = new Image();
 sprite.src   = 'kiro-logo.png';
 
+// Pre-render orange-tinted opponent sprite once sprite loads
+let opponentCanvas = null;
+sprite.onload = () => {
+  opponentCanvas = document.createElement('canvas');
+  opponentCanvas.width  = PLAYER_W;
+  opponentCanvas.height = PLAYER_H;
+  const oc = opponentCanvas.getContext('2d');
+  oc.drawImage(sprite, 0, 0, PLAYER_W, PLAYER_H);
+  oc.globalCompositeOperation = 'source-atop';
+  oc.fillStyle = 'rgba(255, 110, 0, 0.72)';
+  oc.fillRect(0, 0, PLAYER_W, PLAYER_H);
+};
+
 // ─── High Score Persistence ──────────────────────────────────────────────────
 function loadHighScore() {
   try {
@@ -273,7 +295,16 @@ function saveHighScore() {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 function resetBall() {
-  ball.x  = 150 + Math.random() * (GOAL.x - 250);
+  // Find a position that doesn't overlap player or opponent
+  const safeGap = PLAYER_W + BALL_RADIUS + 60;
+  let x = 150 + Math.random() * (GOAL.x - 250);
+  for (let attempts = 0; attempts < 20; attempts++) {
+    const clearOfPlayer   = Math.abs(x - (player.x + PLAYER_W / 2)) > safeGap;
+    const clearOfOpponent = !opponent.active || Math.abs(x - (opponent.x + opponent.w / 2)) > safeGap;
+    if (clearOfPlayer && clearOfOpponent) break;
+    x = 150 + Math.random() * (GOAL.x - 250);
+  }
+  ball.x  = x;
   ball.y  = GROUND_Y - BALL_RADIUS;
   ball.vx = 0;
   ball.vy = 0;
@@ -283,6 +314,7 @@ function resetPositions() {
   player.x = 80; player.y = GROUND_Y - PLAYER_H;
   player.vx = 0;  player.vy = 0; player.onGround = false;
   player.kickCooldown = 0;
+  player.jumpCount = 0;
   resetBall();
 }
 
@@ -304,8 +336,8 @@ function startGame() {
   gameState  = 'playing';
 }
 
-function jump() {
-  player.vy = JUMP_POWER;
+function jump(isDouble = false) {
+  player.vy = isDouble ? JUMP_POWER * 1.2 : JUMP_POWER;
   player.onGround = false;
 }
 
@@ -382,12 +414,14 @@ function update() {
     player.y = GROUND_Y - PLAYER_H;
     player.vy = 0;
     player.onGround = true;
+    player.jumpCount = 0;
   } else {
     player.onGround = false;
   }
 
-  // Wall bounds
-  player.x = Math.max(0, Math.min(W - PLAYER_W, player.x));
+  // Wall bounds — small buffer to prevent sticking at edges
+  player.x = Math.max(4, Math.min(W - PLAYER_W - 4, player.x));
+  if (player.x <= 4 || player.x >= W - PLAYER_W - 4) player.vx = 0;
 
   // ── Ball physics ──
   ball.vy += BALL_GRAVITY;
@@ -410,7 +444,7 @@ function update() {
     ball.x  = BALL_RADIUS;
     ball.vx = Math.abs(ball.vx) * 0.7;
   }
-  // Ball exits right side — reset to random position (missed shot)
+  // Ball exits right side — reset ball only, keep player position
   if (ball.x - BALL_RADIUS > W) {
     resetBall();
   }
@@ -431,16 +465,29 @@ function update() {
     const nx = dx / dist;
     const ny = dy / dist;
 
-    const playerSpeed  = Math.sqrt(player.vx * player.vx + player.vy * player.vy);
-    const kickStrength = 7 + playerSpeed * 1.1; // more power = longer parabola
-    // Base loft: ~20° standing, up to ~40° full sprint
+    const playerSpeed = Math.sqrt(player.vx * player.vx + player.vy * player.vy);
+    // Ball approach speed — ball moving toward stationary player still has energy
+    const ballApproach = Math.max(0, -(ball.vx * nx + ball.vy * ny)); // relative closing speed
+    // Power: player speed + ball's own incoming energy
+    const kickStrength = 1.5 + playerSpeed * 2.2 + ballApproach * 0.8;
+
+    // Direction: blend collision normal with player movement direction
+    // More player speed = more influence of player direction on ball trajectory
+    const speedRatio   = Math.min(playerSpeed / PLAYER_SPEED, 1.5);
+    const moveDirX     = playerSpeed > 0.3 ? player.vx / playerSpeed : nx;
+    const moveDirY     = playerSpeed > 0.3 ? player.vy / playerSpeed : ny;
+    // Blend: slow = pure collision normal, fast = player movement direction
+    const blendX = nx * (1 - speedRatio * 0.6) + moveDirX * (speedRatio * 0.6);
+    const blendY = ny * (1 - speedRatio * 0.6) + moveDirY * (speedRatio * 0.6);
+    const blendLen = Math.sqrt(blendX * blendX + blendY * blendY) || 1;
+
+    // Loft: sprint adds loft, jumping adds extra loft
     const sprintRatio  = Math.min(Math.abs(player.vx) / PLAYER_SPEED, 1);
-    let   loftAngle    = -(0.35 + sprintRatio * 0.35); // -0.35 to -0.70 rad
-    // Diagonal kick bonus: running + jumping adds extra elevation (~15° more)
-    const isDiagonal   = Math.abs(player.vx) > 1.0 && Math.abs(player.vy) > 0.5;
-    if (isDiagonal) loftAngle -= 0.28;
+    const jumpBonus    = player.vy < -1 ? 0.30 : 0; // extra loft when jumping up
+    const loftAngle    = -(0.09 + sprintRatio * 0.57 + jumpBonus);
+
     ball.vx = kickStrength * Math.cos(loftAngle) * (player.facing >= 0 ? 1 : -1);
-    ball.vy = kickStrength * Math.sin(loftAngle);
+    ball.vy = kickStrength * Math.sin(loftAngle) + (blendY / blendLen) * playerSpeed * 0.4;
 
     // push ball out of overlap
     ball.x = px + nx * (minDist + 1);
@@ -495,10 +542,10 @@ function update() {
     ball.x = closestX + nx * (BALL_RADIUS + 1);
     ball.y = closestY + ny * (BALL_RADIUS + 1);
 
-    // Stuck detection — if ball barely moving on crossbar, reset after 90 frames
-    if (Math.abs(ball.vx) < 0.5 && Math.abs(ball.vy) < 0.5) {
+    // Stuck detection — reset after 30 frames of near-zero velocity on crossbar
+    if (Math.abs(ball.vx) < 0.8 && Math.abs(ball.vy) < 0.8) {
       ballStuckTimer++;
-      if (ballStuckTimer > 90) {
+      if (ballStuckTimer > 30) {
         ballStuckTimer = 0;
         resetBall();
       }
@@ -550,35 +597,60 @@ function update() {
     if (opponent.x <= opponent.patrolMin || opponent.x >= opponent.patrolMax) {
       opponent.vx *= -1;
     }
-    // Ball collision with opponent
-    const odx = ball.x - (opponent.x + opponent.w / 2);
-    const ody = ball.y - (opponent.y + opponent.h / 2);
+    // Ball collision with opponent — block ball from passing through
+    const ocx = opponent.x + opponent.w / 2;
+    const ocy = opponent.y + opponent.h / 2;
+    const odx = ball.x - ocx;
+    const ody = ball.y - ocy;
     const odist = Math.sqrt(odx * odx + ody * ody);
-    const ominDist = BALL_RADIUS + Math.min(opponent.w, opponent.h) / 2;
+    const ominDist = BALL_RADIUS + Math.max(opponent.w, opponent.h) / 2;
     if (odist < ominDist && odist > 0) {
       const onx = odx / odist;
       const ony = ody / odist;
-      ball.vx = onx * 4;
-      ball.vy = ony * 4 - 1;
-      ball.x = (opponent.x + opponent.w / 2) + onx * (ominDist + 1);
-      ball.y = (opponent.y + opponent.h / 2) + ony * (ominDist + 1);
+      // Use relative velocity (ball vs opponent) for realistic bounce
+      const relVx = ball.vx - opponent.vx;
+      const relVy = ball.vy;
+      const dot = relVx * onx + relVy * ony;
+      // Minimum bounce speed so even slow contact deflects the ball
+      const minBounce = 3.5;
+      const bounceSpeed = Math.max(Math.abs(dot) * 1.4, minBounce);
+      ball.vx = onx * bounceSpeed;
+      ball.vy = ony * bounceSpeed - 1.0;
+      // Push ball fully outside opponent
+      ball.x = ocx + onx * (ominDist + 2);
+      ball.y = ocy + ony * (ominDist + 2);
     }
   }
 }
 
 // ─── Draw ─────────────────────────────────────────────────────────────────────
 function drawFans() {
+  const celebrating = goalBannerTimer > 0;
   fans.forEach(fan => {
-    const dy = gameState === 'playing'
-      ? FAN_AMPLITUDE * Math.sin(frameCount * FAN_SPEED + fan.phase)
-      : 0;
+    let dy = 0;
+    if (gameState === 'playing') {
+      if (celebrating) {
+        // Crazy celebration — fast random jumping
+        dy = FAN_AMPLITUDE * 3 * Math.sin(frameCount * 0.4 + fan.phase)
+           + Math.sin(frameCount * 0.7 + fan.phase * 2) * FAN_AMPLITUDE * 2;
+      } else {
+        dy = FAN_AMPLITUDE * Math.sin(frameCount * FAN_SPEED + fan.phase);
+      }
+    }
     const y = fan.baseY + dy;
-    const s = fan.scale;
+    const s = fan.scale * 1.5; // bigger fans
     ctx.fillStyle = fan.color;
+    // Head
     ctx.beginPath();
-    ctx.arc(fan.x, y - 14 * s, 6 * s, 0, Math.PI * 2);
+    ctx.arc(fan.x, y - 16 * s, 7 * s, 0, Math.PI * 2);
     ctx.fill();
-    ctx.fillRect(fan.x - 5 * s, y - 8 * s, 10 * s, 16 * s);
+    // Body
+    ctx.fillRect(fan.x - 6 * s, y - 9 * s, 12 * s, 18 * s);
+    // Arms raised during celebration
+    if (celebrating) {
+      ctx.fillRect(fan.x - 14 * s, y - 18 * s, 8 * s, 4 * s); // left arm up
+      ctx.fillRect(fan.x + 6 * s,  y - 18 * s, 8 * s, 4 * s); // right arm up
+    }
   });
 }
 
@@ -767,6 +839,7 @@ function drawPlayer() {
 
 function drawOpponent() {
   if (!opponent.active) return;
+  const img = opponentCanvas || sprite; // fallback to sprite if not loaded yet
   ctx.save();
 
   // Shadow
@@ -775,20 +848,14 @@ function drawOpponent() {
   ctx.ellipse(opponent.x + opponent.w / 2, GROUND_Y + 4, opponent.w * 0.4, 4, 0, 0, Math.PI * 2);
   ctx.fill();
 
-  // Draw sprite (same as player) with red tint via composite
-  ctx.drawImage(sprite, opponent.x, opponent.y, opponent.w, opponent.h);
-
-  // Orange colour overlay using source-atop
-  ctx.globalCompositeOperation = 'source-atop';
-  ctx.fillStyle = 'rgba(255, 120, 0, 0.65)';
-  ctx.fillRect(opponent.x, opponent.y, opponent.w, opponent.h);
-  ctx.globalCompositeOperation = 'source-over';
-
-  // Red glow — subtle shadow only, no rectangle outline
-  ctx.shadowColor = '#ff7700';
-  ctx.shadowBlur  = 12;
-  ctx.drawImage(sprite, opponent.x, opponent.y, opponent.w, opponent.h);
-  ctx.shadowBlur  = 0;
+  // Flip based on movement direction
+  if (opponent.vx < 0) {
+    ctx.translate(opponent.x + opponent.w, opponent.y);
+    ctx.scale(-1, 1);
+    ctx.drawImage(img, 0, 0, opponent.w, opponent.h);
+  } else {
+    ctx.drawImage(img, opponent.x, opponent.y, opponent.w, opponent.h);
+  }
 
   ctx.restore();
 }
